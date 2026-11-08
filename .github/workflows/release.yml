@@ -1,0 +1,98 @@
+name: Release
+
+# Rilis dibuat dengan mendorong tag versi, mis.: git tag v0.2.0 && git push origin v0.2.0
+# Hasilnya DRAFT di GitHub Releases (installer NSIS, paket updater + .sig, latest.json). Periksa lalu publikasikan.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      # Kunci penandatangan updater. Jangan pernah di-commit; simpan sebagai secret repo.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Sertifikat code signing (opsional, tetapi tanpa ini Windows SmartScreen memperingatkan pengguna).
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Versi tag harus sama dengan versi aplikasi
+        shell: bash
+        run: |
+          node scripts/version.mjs
+          app_version=$(node -p "require('./package.json').version")
+          if [ "v$app_version" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} tidak sama dengan versi aplikasi v$app_version"; exit 1
+          fi
+
+      - name: Pasang sertifikat code signing (bila ada)
+        if: ${{ env.WINDOWS_CERTIFICATE != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pass = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pass
+          Remove-Item $pfx
+          # Konfigurasi tambahan yang hanya dipakai saat build ini.
+          $conf = @{ bundle = @{ windows = @{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = "sha256"
+            timestampUrl = "http://timestamp.digicert.com"
+          } } } | ConvertTo-Json -Depth 5
+          Set-Content -Path "$env:RUNNER_TEMP\signing.conf.json" -Value $conf -Encoding utf8
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Akuntansi ${{ github.ref_name }}"
+          releaseBody: "Lihat CHANGELOG untuk daftar perubahan. Data Anda dibackup otomatis sebelum update dipasang."
+          releaseDraft: true
+          includeUpdaterJson: true
+          args: ${{ env.WINDOWS_CERTIFICATE != '' && format('--config {0}/signing.conf.json', runner.temp) || '' }}
+
+      - name: Cantumkan SHA-256 installer di catatan rilis
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          $setup = ($env:ARTIFACTS | ConvertFrom-Json) | Where-Object { $_ -like "*-setup.exe" } | Select-Object -First 1
+          if (-not $setup) { throw "Installer tidak ditemukan di artifactPaths" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $name = Split-Path $setup -Leaf
+          $body = gh release view "${{ github.ref_name }}" --json body --jq .body
+          $fence = '```'
+          $note = @"
+          $body
+
+          **SHA-256** ($name)
+
+          $fence
+          $hash
+          $fence
+
+          Belum bertanda tangan Windows: SmartScreen akan memperingatkan. Lihat PANDUAN.md.
+          "@
+          gh release edit "${{ github.ref_name }}" --notes $note
