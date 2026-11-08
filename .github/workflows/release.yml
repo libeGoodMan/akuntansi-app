@@ -67,7 +67,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Akuntansi ${{ github.ref_name }}"
-          releaseBody: "Lihat CHANGELOG untuk daftar perubahan. Data Anda dibackup otomatis sebelum update dipasang."
+          releaseBody: "Versi beta. Panduan pemakaian dan cara mengatasi peringatan SmartScreen ada di PANDUAN.md. Data Anda dibackup otomatis sebelum update dipasang."
           releaseDraft: true
           includeUpdaterJson: true
           args: ${{ env.WINDOWS_CERTIFICATE != '' && format('--config {0}/signing.conf.json', runner.temp) || '' }}
