@@ -41,8 +41,10 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test --lib
 
-      - name: Lisensi dependency (cargo-deny)
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: taiki-e/install-action@v2
         with:
-          manifest-path: src-tauri/Cargo.toml
-          command: check licenses
+          tool: cargo-deny
+
+      - name: Lisensi dependency (cargo-deny)
+        working-directory: src-tauri
+        run: cargo deny check licenses
